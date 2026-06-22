@@ -58,7 +58,7 @@ Slack Message: "${messageText}"${contextStr}`;
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent }
       ],
-      model: 'llama3-70b-8192', // Llama 3 70B is highly capable of JSON output and accurate reasoning
+      model: 'llama-3.3-70b-versatile', // Llama 3.3 70B is highly capable of JSON output and accurate reasoning
       response_format: { type: 'json_object' },
       temperature: 0.1, // low temperature for consistent JSON and high accuracy
     });
@@ -134,7 +134,7 @@ ${decisionListStr}`;
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent }
       ],
-      model: 'llama3-70b-8192',
+      model: 'llama-3.3-70b-versatile',
       temperature: 0.3,
     });
 

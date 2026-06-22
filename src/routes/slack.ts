@@ -10,6 +10,43 @@ import { SlackMessageJob, Decision } from '../types';
 
 export const slackRouter = Router();
 
+/**
+ * Normalizes and cleans conversational query to extract core keywords
+ */
+function cleanSearchQuery(query: string): string {
+  const conversationalStopWords = new Set([
+    'why', 'how', 'what', 'who', 'when', 'where', 'which',
+    'choose', 'chose', 'chosen', 'choosing',
+    'decide', 'decided', 'decision', 'decisions',
+    'select', 'selected', 'selecting',
+    'adopt', 'adopted', 'adopting',
+    'pick', 'picked', 'picking',
+    'use', 'used', 'using',
+    'want', 'wanted', 'wanting',
+    'need', 'needed', 'needs',
+    'we', 'i', 'they', 'you', 'he', 'she', 'us',
+    'did', 'do', 'does', 'done', 'doing', 'make', 'made', 'making',
+    'have', 'has', 'had', 'having',
+    'go', 'went', 'gone', 'going',
+    'about', 'for', 'to', 'with', 'on', 'at', 'by', 'from'
+  ]);
+
+  let clean = query.toLowerCase();
+  
+  // Normalize common terms (e.g. mongodb -> mongo db, nextjs -> next js)
+  clean = clean.replace(/\bmongodb\b/g, 'mongo db');
+  clean = clean.replace(/\bnextjs\b/g, 'next js');
+  
+  const words = clean.split(/[^\w]+/);
+  const filteredWords = words.filter(word => word && !conversationalStopWords.has(word));
+  
+  if (filteredWords.length === 0) {
+    return query;
+  }
+  
+  return filteredWords.join(' ');
+}
+
 // Middleware to capture raw body for signature verification
 export const rawBodySaver = (req: any, res: Response, buf: Buffer, encoding: string) => {
   if (buf && buf.length) {
@@ -180,6 +217,9 @@ slackRouter.post('/commands', verifySlackSignature, async (req: Request, res: Re
     try {
       console.log(`Searching decisions for command request: "${cleanQuery}" (Team: ${team_id})`);
 
+      const cleanedSearchText = cleanSearchQuery(cleanQuery);
+      console.log(`Cleaned search text: "${cleanedSearchText}"`);
+
       // Search using full-text search first
       let searchRes = await db.query<Decision>(
         `SELECT *, ts_rank_cd(to_tsvector('english', decision_text || ' ' || COALESCE(rationale, '')), websearch_to_tsquery('english', $2)) as rank
@@ -188,20 +228,26 @@ slackRouter.post('/commands', verifySlackSignature, async (req: Request, res: Re
            AND to_tsvector('english', decision_text || ' ' || COALESCE(rationale, '')) @@ websearch_to_tsquery('english', $2)
          ORDER BY rank DESC
          LIMIT 3`,
-        [team_id, cleanQuery]
+        [team_id, cleanedSearchText]
       );
 
-      // Fallback to ILIKE search if no matches found via full-text search (e.g. partial matches)
+      // Fallback to keyword-based fuzzy search if no matches found via full-text search
       if (searchRes.rows.length === 0) {
-        const fuzzyPattern = `%${cleanQuery}%`;
-        searchRes = await db.query<Decision>(
-          `SELECT * FROM decisions 
-           WHERE workspace_id = $1 
-             AND (decision_text ILIKE $2 OR rationale ILIKE $2)
-           ORDER BY message_date DESC
-           LIMIT 3`,
-          [team_id, fuzzyPattern]
-        );
+        const keywords = cleanedSearchText.split(/\s+/).filter(Boolean);
+        
+        if (keywords.length > 0) {
+          let queryText = 'SELECT * FROM decisions WHERE workspace_id = $1';
+          const queryParams: any[] = [team_id];
+          
+          keywords.forEach((keyword, index) => {
+            const paramIndex = index + 2;
+            queryText += ` AND (decision_text ILIKE $${paramIndex} OR rationale ILIKE $${paramIndex})`;
+            queryParams.push(`%${keyword}%`);
+          });
+          
+          queryText += ' ORDER BY message_date DESC LIMIT 3';
+          searchRes = await db.query<Decision>(queryText, queryParams);
+        }
       }
 
       // Synthesize final answer using Groq LLM (RAG pipeline)
